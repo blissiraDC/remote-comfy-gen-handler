@@ -56,13 +56,13 @@ def _upload_s3(local_path: str, key: str = "") -> str:
     content_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
     client.upload_file(local_path, bucket, key, ExtraArgs={"ContentType": content_type})
 
-    # Build URL based on provider
-    if endpoint_url:
-        # R2/B2/MinIO — use endpoint URL format
-        return f"{endpoint_url.rstrip('/')}/{bucket}/{key}"
-    else:
-        # AWS S3
-        return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+    # Generate pre-signed URL (works for all providers including private R2 buckets)
+    url = client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=604800,  # 7 days
+    )
+    return url
 
 
 def upload(local_path: str, key: str = "") -> str:
