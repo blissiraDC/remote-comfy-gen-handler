@@ -667,9 +667,11 @@ def handler(job: dict) -> dict:
         print(f"@@JOB_END {job_id}", flush=True)
         error_msg = _clean_error(str(e))
         print(f"[job {job_id[:8]}] FAILED after {elapsed}s: {error_msg}", flush=True)
-        # Return error dict — RunPod SDK treats this as COMPLETED with error in output.
-        # We include "error" at top level so the CLI can detect it.
-        return {"error": error_msg}
+        # Return error as "error_message" (not "error") because the RunPod SDK
+        # pops the "error" key and handles it separately, which can cause
+        # send_result to fail silently and leave the job stuck at IN_PROGRESS.
+        # Using "error_message" keeps it in the output dict untouched.
+        return {"ok": False, "error_message": error_msg}
 
     finally:
         # --- Cleanup temp files ---
