@@ -660,6 +660,8 @@ def handler(job: dict) -> dict:
         if hash_result:
             output["model_hashes"] = hash_result
 
+        # See sleep comment in except block — same race condition applies
+        time.sleep(1)
         return {"ok": True, "output": output}
 
     except Exception as e:
@@ -667,10 +669,12 @@ def handler(job: dict) -> dict:
         print(f"@@JOB_END {job_id}", flush=True)
         error_msg = _clean_error(str(e))
         print(f"[job {job_id[:8]}] FAILED after {elapsed}s: {error_msg}", flush=True)
-        # Return error as "error_message" (not "error") because the RunPod SDK
-        # pops the "error" key and handles it separately, which can cause
-        # send_result to fail silently and leave the job stuck at IN_PROGRESS.
-        # Using "error_message" keeps it in the output dict untouched.
+        # Race condition: RunPod SDK sends progress_update async. If we return
+        # too quickly, the progress POST arrives after the result POST and
+        # overwrites the status back to IN_PROGRESS. sleep(1) gives the
+        # progress POST time to complete first.
+        # See: https://github.com/runpod/runpod-python/issues/250
+        time.sleep(1)
         return {"ok": False, "error_message": error_msg}
 
     finally:
