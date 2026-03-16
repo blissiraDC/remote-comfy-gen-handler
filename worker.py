@@ -666,13 +666,10 @@ def handler(job: dict) -> dict:
         elapsed = int(time.time() - start_time)
         print(f"@@JOB_END {job_id}", flush=True)
         error_msg = _clean_error(str(e))
-        # Cap error length — RunPod SDK may fail to POST very long errors,
-        # leaving the job stuck at IN_PROGRESS instead of transitioning to FAILED.
-        if len(error_msg) > 1000:
-            error_msg = error_msg[:1000] + "..."
         print(f"[job {job_id[:8]}] FAILED after {elapsed}s: {error_msg}", flush=True)
-        # Raise so RunPod SDK marks the job as FAILED (not stuck IN_PROGRESS)
-        raise RuntimeError(error_msg) from None
+        # Return error dict — RunPod SDK treats this as COMPLETED with error in output.
+        # We include "error" at top level so the CLI can detect it.
+        return {"error": error_msg}
 
     finally:
         # --- Cleanup temp files ---
