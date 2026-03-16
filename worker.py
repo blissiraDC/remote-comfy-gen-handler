@@ -422,7 +422,11 @@ def handler(job: dict) -> dict:
         # --- Step 2b: Check all referenced models exist on disk ---
         missing_models = _check_models_exist(workflow)
         if missing_models:
-            raise RuntimeError(f"Missing models: {missing_models}")
+            names = ", ".join(missing_models)
+            raise RuntimeError(
+                f"Missing {len(missing_models)} model(s) on network volume: {names}. "
+                f"Download them with: comfy-gen download"
+            )
 
         # --- Step 3: Pre-flight check for missing custom nodes ---
         # Uses filesystem scan (no ComfyUI needed) to detect missing nodes,
@@ -602,7 +606,27 @@ def handler(job: dict) -> dict:
     except Exception as e:
         elapsed = int(time.time() - start_time)
         print(f"@@JOB_END {job_id}", flush=True)
-        raise RuntimeError(f"Job failed after {elapsed}s: {e}") from e
+        error_msg = str(e)
+
+        # Parse ComfyUI-specific errors into clean messages
+        if "missing_node_type" in error_msg:
+            # Extract the readable part from ComfyUI's error JSON
+            try:
+                # Find the JSON payload in the error string
+                json_start = error_msg.find('{"error"')
+                if json_start != -1:
+                    comfy_err = json.loads(error_msg[json_start:])
+                    node_title = comfy_err["error"]["extra_info"].get("node_title", "")
+                    class_type = comfy_err["error"]["extra_info"].get("class_type", "")
+                    error_msg = (
+                        f"Missing custom node: {node_title or class_type}. "
+                        f"The auto-installer could not find or install this node."
+                    )
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        print(f"[job {job_id[:8]}] FAILED after {elapsed}s: {error_msg}", flush=True)
+        return {"ok": False, "error": error_msg, "elapsed_seconds": elapsed}
 
     finally:
         # --- Cleanup temp files ---
