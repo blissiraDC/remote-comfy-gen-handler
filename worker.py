@@ -297,19 +297,22 @@ def _compute_model_hashes(workflow: dict) -> dict:
 MODEL_EXTENSIONS = (".safetensors", ".gguf", ".ckpt", ".pth", ".pt", ".bin")
 
 
-def _scan_all_model_refs(workflow: dict) -> list[str]:
+def _scan_all_model_refs(workflow: dict) -> list[dict]:
     """Scan workflow for any input value that looks like a model filename.
 
     Instead of hardcoding loader class_types, checks every node input
-    whose field name ends with '_name' and value ends with a model
+    whose field name contains '_name' and value ends with a model
     extension. This catches standard loaders, custom node loaders
     (UnetLoaderGGUF, DualCLIPLoader, etc.), and future loaders.
+
+    Returns list of {filename, input_field, node_id, class_type}.
     """
-    filenames = []
+    refs = []
     seen = set()
-    for _node_id, node in workflow.items():
+    for node_id, node in workflow.items():
         if not isinstance(node, dict):
             continue
+        class_type = node.get("class_type", "")
         inputs = node.get("inputs", {})
         for field, value in inputs.items():
             if not isinstance(value, str):
@@ -320,20 +323,77 @@ def _scan_all_model_refs(workflow: dict) -> list[str]:
                 continue
             if value not in seen:
                 seen.add(value)
-                filenames.append(value)
-    return filenames
+                refs.append({
+                    "filename": value,
+                    "input_field": field,
+                    "node_id": node_id,
+                    "class_type": class_type,
+                })
+    return refs
 
 
-def _check_models_exist(workflow: dict) -> list[str]:
+def _get_manager_model_list() -> dict[str, dict]:
+    """Fetch the ComfyUI-Manager model list and build a filename lookup.
+
+    Returns {filename: {url, save_path, name}} or empty dict on failure.
+    """
+    try:
+        url = f"http://{os.environ.get('COMFY_HOST', '127.0.0.1:8188')}/externalmodel/getlist?mode=cache"
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = json.loads(r.read())
+        return {
+            m["filename"]: {
+                "url": m.get("url", ""),
+                "save_path": m.get("save_path", ""),
+                "name": m.get("name", ""),
+            }
+            for m in data.get("models", [])
+            if m.get("filename")
+        }
+    except Exception:
+        return {}
+
+
+def _check_models_exist(workflow: dict) -> list[dict]:
     """Check that all model files referenced in the workflow exist on disk.
 
-    Returns list of missing filenames. Empty list means all models found.
+    Returns list of missing model dicts with download info where available.
+    Empty list means all models found.
     """
-    filenames = _scan_all_model_refs(workflow)
+    refs = _scan_all_model_refs(workflow)
     missing = []
-    for filename in filenames:
-        if _resolve_model_path(filename) is None:
-            missing.append(filename)
+    seen = set()
+
+    # Lazy-load the Manager model list only if we find missing models
+    manager_models = None
+
+    for ref in refs:
+        filename = ref["filename"]
+        if filename in seen:
+            continue
+        seen.add(filename)
+
+        if _resolve_model_path(filename) is not None:
+            continue
+
+        # Model is missing — look up download info
+        if manager_models is None:
+            manager_models = _get_manager_model_list()
+
+        entry = {
+            "filename": filename,
+            "input_field": ref["input_field"],
+            "node_id": ref["node_id"],
+            "class_type": ref["class_type"],
+        }
+
+        dl_info = manager_models.get(filename)
+        if dl_info:
+            entry["download_url"] = dl_info["url"]
+            entry["save_path"] = dl_info["save_path"]
+
+        missing.append(entry)
+
     return missing
 
 
@@ -505,11 +565,17 @@ def handler(job: dict) -> dict:
         # --- Step 2b: Check all referenced models exist on disk ---
         missing_models = _check_models_exist(workflow)
         if missing_models:
-            names = ", ".join(missing_models)
-            raise RuntimeError(
-                f"Missing {len(missing_models)} model(s) on network volume: {names}. "
-                f"Download them with: comfy-gen download"
-            )
+            names = ", ".join(m["filename"] for m in missing_models)
+            print(f"[job {job_id[:8]}] Missing models: {names}", flush=True)
+            downloadable = [m for m in missing_models if "download_url" in m]
+            time.sleep(1)  # Race condition fix (issue #250)
+            return {
+                "ok": False,
+                "error_type": "missing_models",
+                "error_message": f"Missing {len(missing_models)} model(s) on network volume: {names}",
+                "missing_models": missing_models,
+                "downloadable_count": len(downloadable),
+            }
 
         # --- Step 3: Pre-flight check for missing custom nodes ---
         # Uses filesystem scan (no ComfyUI needed) to detect missing nodes,
