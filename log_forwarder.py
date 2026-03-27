@@ -91,6 +91,7 @@ class AvivLogger:
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self._token}",
+                    "User-Agent": "comfy-gen-worker/1.0",
                 },
             )
             try:
