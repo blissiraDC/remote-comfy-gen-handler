@@ -92,7 +92,10 @@ def _resolve_model_path(filename: str) -> str | None:
             continue
         for root, _dirs, files in os.walk(base):
             if filename in files:
-                return os.path.join(root, filename)
+                path = os.path.join(root, filename)
+                # Verify the file actually exists (catches broken symlinks)
+                if os.path.isfile(path):
+                    return path
     return None
 
 
